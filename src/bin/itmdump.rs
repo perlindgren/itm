@@ -13,6 +13,7 @@ use itm::{packet, Decoder, Error};
 use log::{LogLevelFilter, LogRecord};
 use std::fs::File;
 use std::io::Write;
+use std::net::TcpStream;
 use std::time::Duration;
 use std::{env, io, process, thread};
 
@@ -60,12 +61,25 @@ fn run() -> Result<(), failure::Error> {
                 .help("Path to file (or named pipe) to read from")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("port")
+                .conflicts_with("file")
+                .long("port")
+                .short("p")
+                .help("Port for TCP listener (e.g., JLinkGDBSerever")
+                .takes_value(true)
+                //.default_value("")
+                .validator(|s| match s.parse::<String>() {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                }),
+        )
         .arg(Arg::with_name("follow").long("follow").short("F").help(
             "Keep the file open after reading through it and \
              append new output as it is written. Like `tail -f'.",
         ))
         .arg(
-            Arg::with_name("port")
+            Arg::with_name("stimulus")
                 .long("stimulus")
                 .short("s")
                 .help("Stimulus port to extract ITM data for.")
@@ -78,14 +92,32 @@ fn run() -> Result<(), failure::Error> {
         )
         .get_matches();
 
-    let port = matches.value_of("port")
-                           .unwrap() // We supplied a default value
-                           .parse::<u8>()
-                           .expect("Arg validator should ensure this parses");
+    let port = matches
+        .value_of("stimulus")
+        .unwrap() // We supplied a default value
+        .parse::<u8>()
+        .expect("Arg validator should ensure this parses");
+
+    let tcp_port = match matches.value_of("port") {
+        Some(port) => Some(
+            port.parse::<String>()
+                .expect("Arg validator should ensure this parses"),
+        ),
+        None => None,
+    };
+
+    println!("tcp_port {:?}", tcp_port);
 
     let follow = matches.is_present("follow");
 
-    let read = open_read(&matches)?;
+    let read = match tcp_port {
+        None => open_read(&matches)?,
+        Some(port) => {
+            let f = TcpStream::connect(port)?;
+            Box::new(f) as Box<dyn io::Read + 'static>
+        }
+    };
+
     let mut decoder = Decoder::new(read, follow);
 
     let stdout = io::stdout();
@@ -128,13 +160,13 @@ fn run() -> Result<(), failure::Error> {
     // Unreachable.
 }
 
-fn open_read(matches: &ArgMatches) -> Result<Box<io::Read + 'static>, io::Error> {
+fn open_read(matches: &ArgMatches) -> Result<Box<dyn io::Read + 'static>, io::Error> {
     let path = matches.value_of("file");
     Ok(match path {
         Some(path) => {
             let f = File::open(path)?;
-            Box::new(f) as Box<io::Read + 'static>
+            Box::new(f) as Box<dyn io::Read + 'static>
         }
-        None => Box::new(io::stdin()) as Box<io::Read + 'static>,
+        None => Box::new(io::stdin()) as Box<dyn io::Read + 'static>,
     })
 }
